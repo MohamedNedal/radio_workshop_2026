@@ -1,0 +1,24 @@
+# Core stack
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10
+matplotlib>=3.7
+astropy>=5.3
+
+# UI and interactive plots
+streamlit>=1.32
+plotly>=5.18
+streamlit-plotly-events>=0.0.6
+
+# Data I/O for the various instruments
+# pick one: spacepy needs the NASA CDF C library; cdflib is pure Python.
+cdflib>=1.2          # CDF reader for STEREO/SWAVES, Wind, PSP, Solar Orbiter
+# spacepy>=0.5       # optional, faster but heavier; install separately
+
+# Optional, instrument-specific
+sigpyproc>=1.1       # I-LOFAR / REALTA filterbank
+sunpy>=5.0           # Solar Orbiter / RPW via Fido, plus SPICE coordinates
+pyspedas>=1.5        # alternative loaders for PSP/Wind/SWAVES (not required)
+
+# HTTP downloads
+requests>=2.31
