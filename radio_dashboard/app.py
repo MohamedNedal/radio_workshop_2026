@@ -41,12 +41,13 @@ from radio_dashboard.session import (
     clicked_points_to_csv, export_table_with_fit,
 )
 
-# Optional dependency for click capture; degrade gracefully if missing.
-try:
-    from streamlit_plotly_events import plotly_events
-    HAS_PLOTLY_EVENTS = True
-except ImportError:
-    HAS_PLOTLY_EVENTS = False
+"""Click capture uses native Streamlit selection events (Streamlit 1.31+).
+
+We previously depended on `streamlit-plotly-events`, which silently fails
+on Plotly 6.x heatmaps (drops the z array and the figure renders blank).
+The built-in `st.plotly_chart(on_select="rerun")` works correctly with
+current Plotly versions.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -144,47 +145,68 @@ with st.sidebar:
         for key in st.session_state.instruments:
             instr = config.INSTRUMENTS[key]
             with st.expander(instr.label, expanded=False):
-                # Level selector: drive options from the registry. Fall back
-                # to a single-option list if the registry left it empty.
-                level_opts = list(instr.levels) or ["default"]
-                cur_level = st.session_state.instrument_levels.get(key, level_opts[0])
-                if cur_level not in level_opts:
-                    cur_level = level_opts[0]
-                st.session_state.instrument_levels[key] = st.selectbox(
-                    "Level / product",
-                    options=level_opts,
-                    index=level_opts.index(cur_level),
-                    key=f"level_{key}",
-                    help=instr.notes or None,
-                )
-
-                # Version: free text with the known versions as a hint. PSP
-                # is the only one where versions matter today; everything
-                # else accepts the placeholder 'latest'.
-                version_opts = list(instr.versions) or ["latest"]
-                cur_version = st.session_state.instrument_versions.get(
-                    key, version_opts[0]
-                )
-                use_custom = st.checkbox(
-                    "Custom version", value=(cur_version not in version_opts),
-                    key=f"custom_ver_{key}",
-                )
-                if use_custom:
-                    st.session_state.instrument_versions[key] = st.text_input(
-                        "Version tag",
-                        value=cur_version,
-                        max_chars=16,
-                        key=f"ver_text_{key}",
-                    )
+                # --- Level / product ---
+                level_opts = list(instr.levels)
+                if not level_opts:
+                    # Instrument exposes a single product (e.g. ORFEES Stokes I,
+                    # OVSA calibrated); nothing for the user to pick.
+                    st.caption("Level / product: single product, no choice.")
+                    st.session_state.instrument_levels[key] = None
+                elif len(level_opts) == 1:
+                    # Single option: surface it as text so the user knows
+                    # what's selected without a misleading dropdown.
+                    st.caption(f"Level / product: **{level_opts[0]}** "
+                               "(only option for this instrument)")
+                    st.session_state.instrument_levels[key] = level_opts[0]
                 else:
-                    if cur_version not in version_opts:
-                        cur_version = version_opts[0]
-                    st.session_state.instrument_versions[key] = st.selectbox(
-                        "Version",
-                        options=version_opts,
-                        index=version_opts.index(cur_version),
-                        key=f"ver_sel_{key}",
+                    cur_level = st.session_state.instrument_levels.get(key, level_opts[0])
+                    if cur_level not in level_opts:
+                        cur_level = level_opts[0]
+                    st.session_state.instrument_levels[key] = st.selectbox(
+                        "Level / product",
+                        options=level_opts,
+                        index=level_opts.index(cur_level),
+                        key=f"level_{key}",
+                        help=instr.notes or None,
                     )
+
+                # --- Version ---
+                version_opts = list(instr.versions)
+                if not version_opts:
+                    # No user-selectable version: the downloader either
+                    # picks the newest available on the server, or the
+                    # version isn't part of the filename.
+                    st.caption(
+                        "Version: auto-detected from the archive."
+                        if instr.downloadable else
+                        "Version: not used by this loader."
+                    )
+                    st.session_state.instrument_versions[key] = None
+                else:
+                    cur_version = st.session_state.instrument_versions.get(
+                        key, version_opts[0]
+                    )
+                    use_custom = st.checkbox(
+                        "Custom version",
+                        value=(cur_version is not None and cur_version not in version_opts),
+                        key=f"custom_ver_{key}",
+                    )
+                    if use_custom:
+                        st.session_state.instrument_versions[key] = st.text_input(
+                            "Version tag",
+                            value=cur_version or version_opts[0],
+                            max_chars=16,
+                            key=f"ver_text_{key}",
+                        )
+                    else:
+                        if cur_version not in version_opts:
+                            cur_version = version_opts[0]
+                        st.session_state.instrument_versions[key] = st.selectbox(
+                            "Version",
+                            options=version_opts,
+                            index=version_opts.index(cur_version),
+                            key=f"ver_sel_{key}",
+                        )
 
     st.subheader("Processing")
     st.session_state.background_method = st.selectbox(
@@ -226,8 +248,13 @@ with st.sidebar:
         index=list(MODELS.keys()).index(st.session_state.density_model),
     )
     st.session_state.harmonic = st.radio(
-        "Harmonic", options=[1, 2], horizontal=True,
+        "Emission",
+        options=[1, 2],
+        horizontal=True,
         index=[1, 2].index(st.session_state.harmonic),
+        format_func=lambda h: (
+            "Fundamental (f = fp)" if h == 1 else "Harmonic (f = 2 fp)"
+        ),
     )
 
     st.subheader("Session")
@@ -311,6 +338,14 @@ def _level_for(key: str) -> dict:
 
 def _post_process(ds: DynamicSpectrum) -> DynamicSpectrum:
     """Crop, background-subtract, normalise, then decimate for display."""
+    # Stash the pre-crop time range so the diagnostics expander can show
+    # what was actually in the file, regardless of what the user picked.
+    if ds.time.size:
+        ds.meta["raw_time_range"] = (
+            pd.to_datetime(ds.time[0]).isoformat(),
+            pd.to_datetime(ds.time[-1]).isoformat(),
+        )
+        ds.meta["raw_n_time"] = int(ds.time.size)
     ds = ds.crop_time(t_start, t_end)
     bg = st.session_state.background_method
     if bg != "none":
@@ -356,6 +391,38 @@ if load_clicked:
         st.session_state.loaded_spectra = _load_all()
     if st.session_state.loaded_spectra:
         st.success(f"Loaded {len(st.session_state.loaded_spectra)} instrument(s).")
+        # Summarise per-panel state. The empty-after-crop case is the most
+        # common reason a 'loaded' figure looks blank, so it gets a
+        # dedicated warning that names the raw file's time range.
+        for k, ds in st.session_state.loaded_spectra.items():
+            label = config.INSTRUMENTS[k].label
+            if ds.flux.size == 0 or ds.time.size == 0:
+                raw_range = ds.meta.get("raw_time_range")
+                if raw_range:
+                    st.warning(
+                        f"{label}: 0 samples inside the observing window "
+                        f"{t_start} - {t_end}. The data file actually covers "
+                        f"{raw_range[0]} to {raw_range[1]} "
+                        f"({ds.meta.get('raw_n_time', '?')} samples). "
+                        "Adjust the date / time range, or replace the cached file."
+                    )
+                else:
+                    st.warning(
+                        f"{label}: the loader returned an empty spectrum. "
+                        "Check the data file and the observing window."
+                    )
+                continue
+            finite_frac = float(np.isfinite(ds.flux).mean())
+            if finite_frac == 0.0:
+                st.warning(
+                    f"{label}: all values non-finite. Check the background "
+                    "subtraction window or normalisation choice."
+                )
+            elif finite_frac < 0.05:
+                st.info(
+                    f"{label}: only {finite_frac:.1%} of cells finite "
+                    f"(shape {ds.shape}). The panel may look sparse."
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -392,36 +459,50 @@ fig = build_figure(
     vmin_pct=st.session_state.vmin_pct,
     vmax_pct=st.session_state.vmax_pct,
     overlay_curves=overlay,
+    time_range=(t_start, t_end),
 )
 
-if HAS_PLOTLY_EVENTS:
-    clicks = plotly_events(
-        fig, click_event=True, hover_event=False, select_event=False,
-        override_height=fig.layout.height, key="radio_plot",
-    )
-    # Each event has x (time str), y (freq MHz) and curveNumber (heatmap idx).
-    if clicks:
-        for ev in clicks:
-            x = ev.get("x")
-            y = ev.get("y")
-            curve_idx = ev.get("curveNumber")
-            if x is None or y is None:
-                continue
-            instr_key = None
-            if curve_idx is not None and curve_idx < len(spectra_in_order):
-                instr_key = spectra_in_order[curve_idx].instrument
-            st.session_state.clicked_points.append({
-                "time": pd.to_datetime(x).isoformat(),
-                "freq_mhz": float(y),
-                "instrument": instr_key or "",
-            })
+event = st.plotly_chart(
+    fig,
+    use_container_width=True,
+    key="radio_plot",
+    on_select="rerun",
+    selection_mode=("points",),
+)
+
+# Streamlit returns either a dict (with 'selection') or a SelectionState-like
+# object depending on version; handle both shapes defensively.
+selection = None
+if event is not None:
+    if isinstance(event, dict):
+        selection = event.get("selection")
+    else:
+        selection = getattr(event, "selection", None)
+
+new_pts = (selection or {}).get("points") if selection else None
+if new_pts:
+    # Identify which subplot was clicked from curve_number. Each instrument
+    # contributes exactly one Heatmap trace, in the same order as
+    # `spectra_in_order`; overlay scatter traces are appended afterwards.
+    n_heatmaps = len(spectra_in_order)
+    added = 0
+    for pt in new_pts:
+        x = pt.get("x")
+        y = pt.get("y")
+        if x is None or y is None:
+            continue
+        curve_idx = pt.get("curve_number")
+        instr_key = ""
+        if curve_idx is not None and 0 <= int(curve_idx) < n_heatmaps:
+            instr_key = spectra_in_order[int(curve_idx)].instrument
+        st.session_state.clicked_points.append({
+            "time": pd.to_datetime(x).isoformat(),
+            "freq_mhz": float(y),
+            "instrument": instr_key,
+        })
+        added += 1
+    if added:
         st.rerun()
-else:
-    st.plotly_chart(fig, use_container_width=True)
-    st.info(
-        "Install **streamlit-plotly-events** to enable click-to-record "
-        "of (time, frequency) points: `pip install streamlit-plotly-events`."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +584,10 @@ with st.expander("Diagnostics", expanded=False):
     rows = []
     for k in st.session_state.instruments:
         instr = config.INSTRUMENTS[k]
+        ds = st.session_state.loaded_spectra.get(k)
+        raw_range = (ds.meta.get("raw_time_range") if ds else None) or ("-", "-")
+        n_raw = (ds.meta.get("raw_n_time") if ds else None) or 0
+        post_n = ds.time.size if ds else 0
         rows.append({
             "key": k, "label": instr.label,
             "platform": instr.platform,
@@ -511,6 +596,10 @@ with st.expander("Diagnostics", expanded=False):
             "version": st.session_state.instrument_versions.get(k),
             "downloadable": instr.downloadable,
             "ltt_au": st.session_state.ltt_distances_au.get(k),
+            "file_t_start": raw_range[0],
+            "file_t_end": raw_range[1],
+            "n_samples_raw": n_raw,
+            "n_samples_post_crop": post_n,
         })
     if rows:
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)

@@ -43,6 +43,7 @@ def build_figure(
     height_per_panel: int = 230,
     show_density_overlay: bool = False,
     overlay_curves: list[dict] | None = None,
+    time_range: tuple | None = None,
 ) -> go.Figure:
     """Return a Plotly figure with one Heatmap per instrument.
 
@@ -168,6 +169,18 @@ def build_figure(
         showspikes=True, spikemode="across", spikecolor="grey", spikethickness=1,
     )
 
+    # Pin the X range to the user's observing window when supplied.
+    # This is the single most important guard against plotly defaulting
+    # to a year-2000 autorange whenever a panel happens to be empty.
+    if time_range is not None:
+        t0 = pd.to_datetime(time_range[0]).strftime("%Y-%m-%dT%H:%M:%S")
+        t1 = pd.to_datetime(time_range[1]).strftime("%Y-%m-%dT%H:%M:%S")
+        for i in range(1, n + 1):
+            fig.update_xaxes(range=[t0, t1], row=i, col=1)
+        uirev = f"{t0}_{t1}"
+    else:
+        uirev = "free"
+
     fig.update_layout(
         height=max(360, height_per_panel * n),
         margin=dict(l=70, r=70, t=10, b=50),
@@ -176,7 +189,10 @@ def build_figure(
         showlegend=False,
         dragmode="zoom",
         hovermode="closest",
-        uirevision="static",  # preserve zoom across reruns
+        # uirevision is keyed on the observing window so panning is preserved
+        # while you tweak the colour scale, but the figure resets cleanly
+        # when you pick a new date range.
+        uirevision=uirev,
     )
     return fig
 

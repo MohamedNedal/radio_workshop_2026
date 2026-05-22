@@ -8,7 +8,6 @@ astropy>=5.3
 # UI and interactive plots
 streamlit>=1.32
 plotly>=5.18
-streamlit-plotly-events>=0.0.6
 
 # Data I/O for the various instruments
 # pick one: spacepy needs the NASA CDF C library; cdflib is pure Python.

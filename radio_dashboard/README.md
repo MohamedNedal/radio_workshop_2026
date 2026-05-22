@@ -67,8 +67,8 @@ Notes on optional dependencies:
   `Fido` and for the light-travel-time spacecraft lookup; the
   dashboard runs without it but with LTT correction effectively
   disabled.
-- `streamlit-plotly-events` is what makes click-to-record work. The
-  dashboard still renders without it but click capture is disabled.
+- Click-to-record uses Streamlit's native `on_select` selection events
+  (Streamlit 1.31+), so no separate plotly-events package is required.
 
 ## Running
 
